@@ -10,6 +10,7 @@ import (
 	"syscall"
 
 	"github.com/gosom/google-maps-scraper/runner"
+	"github.com/gosom/google-maps-scraper/runner/authrunner"
 	"github.com/gosom/google-maps-scraper/runner/databaserunner"
 	"github.com/gosom/google-maps-scraper/runner/filerunner"
 	"github.com/gosom/google-maps-scraper/runner/installplaywright"
@@ -78,6 +79,8 @@ func runnerFactory(cfg *runner.Config) (runner.Runner, error) {
 		return lambdaaws.New(cfg)
 	case runner.RunModeAwsLambdaInvoker:
 		return lambdaaws.NewInvoker(cfg)
+	case runner.RunModeAuth:
+		return authrunner.New(cfg)
 	default:
 		return nil, fmt.Errorf("%w: %d", runner.ErrInvalidRunMode, cfg.RunMode)
 	}

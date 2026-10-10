@@ -14,7 +14,8 @@ const statusConfig = {
 }
 
 export function StatusBadge({ status, className }: StatusBadgeProps) {
-  const config = statusConfig[status]
+  const normalized = (status || "pending").toLowerCase() as keyof typeof statusConfig
+  const config = statusConfig[normalized] || statusConfig.pending
   
   return (
     <Badge className={cn(config.className, className)}>

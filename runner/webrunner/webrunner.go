@@ -14,8 +14,12 @@ import (
 
 	"github.com/gosom/google-maps-scraper/deduper"
 	"github.com/gosom/google-maps-scraper/exiter"
+	"github.com/gosom/google-maps-scraper/facebook"
 	"github.com/gosom/google-maps-scraper/runner"
+	"github.com/gosom/google-maps-scraper/threads"
+	"github.com/gosom/google-maps-scraper/tiktok"
 	"github.com/gosom/google-maps-scraper/tlmt"
+	"github.com/gosom/google-maps-scraper/twitter"
 	"github.com/gosom/google-maps-scraper/web"
 	"github.com/gosom/google-maps-scraper/web/sqlite"
 	"github.com/gosom/scrapemate"
@@ -145,10 +149,9 @@ func (w *webrunner) scrapeJob(ctx context.Context, job *web.Job) error {
 		return err
 	}
 
-	if len(job.Data.Keywords) == 0 {
-		job.Status = web.StatusFailed
-
-		return w.svc.Update(ctx, job)
+	jobType := job.Data.Type
+	if jobType == "" {
+		jobType = job.Type
 	}
 
 	outpath := filepath.Join(w.cfg.DataFolder, job.ID+".csv")
@@ -181,40 +184,90 @@ func (w *webrunner) scrapeJob(ctx context.Context, job *web.Job) error {
 
 	defer mate.Close()
 
-	var coords string
-	if job.Data.Lat != "" && job.Data.Lon != "" {
-		coords = job.Data.Lat + "," + job.Data.Lon
-	}
-
 	dedup := deduper.New()
 	exitMonitor := exiter.New()
 
-	seedJobs, err := runner.CreateSeedJobs(
-		job.Data.FastMode,
-		job.Data.Lang,
-		strings.NewReader(strings.Join(job.Data.Keywords, "\n")),
-		job.Data.Depth,
-		job.Data.Email,
-		coords,
-		job.Data.Zoom,
-		func() float64 {
-			if job.Data.Radius <= 0 {
-				return 10000 // 10 km
-			}
+	var seedJobs []scrapemate.IJob
 
-			return float64(job.Data.Radius)
-		}(),
-		dedup,
-		exitMonitor,
-		w.cfg.ExtraReviews || job.Data.ExtraReviews,
-	)
-	if err != nil {
-		err2 := w.svc.Update(ctx, job)
-		if err2 != nil {
-			log.Printf("failed to update job status: %v", err2)
+	switch jobType {
+	case "twitter":
+		seedJobs = append(seedJobs, twitter.NewTwitterJob(
+			job.ID,
+			job.Data.Username,
+			job.Data.Query,
+			job.Data.Depth,
+			twitter.WithDeduper(dedup),
+			twitter.WithExitMonitor(exitMonitor),
+			twitter.WithCookie(job.Data.Cookie),
+		))
+	case "threads":
+		seedJobs = append(seedJobs, threads.NewThreadsJob(
+			job.ID,
+			job.Data.Username,
+			job.Data.Depth,
+			threads.WithDeduper(dedup),
+			threads.WithExitMonitor(exitMonitor),
+			threads.WithCookie(job.Data.Cookie),
+		))
+	case "facebook":
+		seedJobs = append(seedJobs, facebook.NewFacebookJob(
+			job.ID,
+			job.Data.Username,
+			job.Data.Query,
+			job.Data.Depth,
+			facebook.WithDeduper(dedup),
+			facebook.WithExitMonitor(exitMonitor),
+			facebook.WithCookie(job.Data.Cookie),
+		))
+	case "tiktok":
+		seedJobs = append(seedJobs, tiktok.NewTikTokJob(
+			job.ID,
+			job.Data.Username,
+			job.Data.Query,
+			job.Data.Depth,
+			tiktok.WithDeduper(dedup),
+			tiktok.WithExitMonitor(exitMonitor),
+			tiktok.WithCookie(job.Data.Cookie),
+		))
+	default:
+		if len(job.Data.Keywords) == 0 {
+			job.Status = web.StatusFailed
+			return w.svc.Update(ctx, job)
 		}
 
-		return err
+		var coords string
+		if job.Data.Lat != "" && job.Data.Lon != "" {
+			coords = job.Data.Lat + "," + job.Data.Lon
+		}
+
+		var err error
+		seedJobs, err = runner.CreateSeedJobs(
+			job.Data.FastMode,
+			job.Data.Lang,
+			strings.NewReader(strings.Join(job.Data.Keywords, "\n")),
+			job.Data.Depth,
+			job.Data.Email,
+			coords,
+			job.Data.Zoom,
+			func() float64 {
+				if job.Data.Radius <= 0 {
+					return 10000 // 10 km
+				}
+
+				return float64(job.Data.Radius)
+			}(),
+			dedup,
+			exitMonitor,
+			w.cfg.ExtraReviews || job.Data.ExtraReviews,
+		)
+		if err != nil {
+			err2 := w.svc.Update(ctx, job)
+			if err2 != nil {
+				log.Printf("failed to update job status: %v", err2)
+			}
+
+			return err
+		}
 	}
 
 	if len(seedJobs) > 0 {
@@ -266,7 +319,8 @@ func defaultSetupMate(cfg *runner.Config) func(context.Context, io.Writer, *web.
 			scrapemateapp.WithExitOnInactivity(time.Minute * 3),
 		}
 
-		if !job.Data.FastMode {
+		isSocial := job.Data.Type == "twitter" || job.Data.Type == "threads" || job.Data.Type == "facebook" || job.Data.Type == "tiktok"
+		if !job.Data.FastMode || isSocial {
 			opts = append(opts,
 				scrapemateapp.WithJS(scrapemateapp.DisableImages()),
 			)

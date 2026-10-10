@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite" // sqlite driver
@@ -25,7 +26,7 @@ func New(path string) (web.JobRepository, error) {
 }
 
 func (repo *repo) Get(ctx context.Context, id string) (web.Job, error) {
-	const q = `SELECT * from jobs WHERE id = ?`
+	const q = `SELECT id, name, status, type, data, created_at, updated_at from jobs WHERE id = ?`
 
 	row := repo.db.QueryRowContext(ctx, q, id)
 
@@ -38,9 +39,9 @@ func (repo *repo) Create(ctx context.Context, job *web.Job) error {
 		return err
 	}
 
-	const q = `INSERT INTO jobs (id, name, status, data, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`
+	const q = `INSERT INTO jobs (id, name, status, type, data, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`
 
-	_, err = repo.db.ExecContext(ctx, q, item.ID, item.Name, item.Status, item.Data, item.CreatedAt, item.UpdatedAt)
+	_, err = repo.db.ExecContext(ctx, q, item.ID, item.Name, item.Status, item.Type, item.Data, item.CreatedAt, item.UpdatedAt)
 	if err != nil {
 		return err
 	}
@@ -57,14 +58,29 @@ func (repo *repo) Delete(ctx context.Context, id string) error {
 }
 
 func (repo *repo) Select(ctx context.Context, params web.SelectParams) ([]web.Job, error) {
-	q := `SELECT * from jobs`
+	q := `SELECT id, name, status, type, data, created_at, updated_at from jobs`
 
-	var args []any
+	var (
+		args       []any
+		conditions []string
+	)
 
 	if params.Status != "" {
-		q += ` WHERE status = ?`
-
+		conditions = append(conditions, "status = ?")
 		args = append(args, params.Status)
+	}
+
+	if params.Type != "" {
+		if params.Type == "gmaps" {
+			conditions = append(conditions, "(type = ? OR type = '')")
+		} else {
+			conditions = append(conditions, "type = ?")
+		}
+		args = append(args, params.Type)
+	}
+
+	if len(conditions) > 0 {
+		q += " WHERE " + strings.Join(conditions, " AND ")
 	}
 
 	q += " ORDER BY created_at DESC"
@@ -82,7 +98,7 @@ func (repo *repo) Select(ctx context.Context, params web.SelectParams) ([]web.Jo
 
 	defer rows.Close()
 
-	var ans []web.Job
+	ans := make([]web.Job, 0)
 
 	for rows.Next() {
 		job, err := rowToJob(rows)
@@ -106,9 +122,9 @@ func (repo *repo) Update(ctx context.Context, job *web.Job) error {
 		return err
 	}
 
-	const q = `UPDATE jobs SET name = ?, status = ?, data = ?, updated_at = ? WHERE id = ?`
+	const q = `UPDATE jobs SET name = ?, status = ?, type = ?, data = ?, updated_at = ? WHERE id = ?`
 
-	_, err = repo.db.ExecContext(ctx, q, item.Name, item.Status, item.Data, item.UpdatedAt, item.ID)
+	_, err = repo.db.ExecContext(ctx, q, item.Name, item.Status, item.Type, item.Data, item.UpdatedAt, item.ID)
 
 	return err
 }
@@ -120,7 +136,7 @@ type scannable interface {
 func rowToJob(row scannable) (web.Job, error) {
 	var j job
 
-	err := row.Scan(&j.ID, &j.Name, &j.Status, &j.Data, &j.CreatedAt, &j.UpdatedAt)
+	err := row.Scan(&j.ID, &j.Name, &j.Status, &j.Type, &j.Data, &j.CreatedAt, &j.UpdatedAt)
 	if err != nil {
 		return web.Job{}, err
 	}
@@ -129,6 +145,7 @@ func rowToJob(row scannable) (web.Job, error) {
 		ID:     j.ID,
 		Name:   j.Name,
 		Status: j.Status,
+		Type:   j.Type,
 		Date:   time.Unix(j.CreatedAt, 0).UTC(),
 	}
 
@@ -136,11 +153,24 @@ func rowToJob(row scannable) (web.Job, error) {
 	if err != nil {
 		return web.Job{}, err
 	}
+	if ans.Type == "" {
+		ans.Type = ans.Data.Type
+	}
+	if ans.Type == "" {
+		ans.Type = "gmaps"
+	}
 
 	return ans, nil
 }
 
 func jobToRow(item *web.Job) (job, error) {
+	jobType := item.Type
+	if jobType == "" {
+		jobType = item.Data.Type
+	}
+	if item.Data.Type == "" {
+		item.Data.Type = jobType
+	}
 	data, err := json.Marshal(item.Data)
 	if err != nil {
 		return job{}, err
@@ -150,6 +180,7 @@ func jobToRow(item *web.Job) (job, error) {
 		ID:        item.ID,
 		Name:      item.Name,
 		Status:    item.Status,
+		Type:      jobType,
 		Data:      string(data),
 		CreatedAt: item.Date.Unix(),
 		UpdatedAt: time.Now().UTC().Unix(),
@@ -160,6 +191,7 @@ type job struct {
 	ID        string
 	Name      string
 	Status    string
+	Type      string
 	Data      string
 	CreatedAt int64
 	UpdatedAt int64
@@ -209,11 +241,18 @@ func createSchema(db *sql.DB) error {
 			id TEXT PRIMARY KEY,
 			name TEXT NOT NULL,
 			status TEXT NOT NULL,
+			type TEXT NOT NULL DEFAULT '',
 			data TEXT NOT NULL,
 			created_at INT NOT NULL,
 			updated_at INT NOT NULL
-		)
+		);
 	`)
+	if err != nil {
+		return err
+	}
 
-	return err
+	_, _ = db.Exec(`ALTER TABLE jobs ADD COLUMN type TEXT NOT NULL DEFAULT ''`)
+	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_jobs_type ON jobs(type)`)
+
+	return nil
 }

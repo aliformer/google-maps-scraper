@@ -1,39 +1,34 @@
 package web
 
 import (
-	"bytes"
 	"context"
 	"embed"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"html/template"
 	"io"
 	"io/fs"
 	"log"
 	"net/http"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
 )
 
-//go:embed static/templates static/css
+//go:embed static/dist static/spec static/redoc.html
 var static embed.FS
 
 type Server struct {
-	tmpl map[string]*template.Template
-	srv  *http.Server
-	svc  *Service
+	srv *http.Server
+	svc *Service
 }
 
 func New(svc *Service, addr string) (*Server, error) {
 	ans := Server{
-		svc:  svc,
-		tmpl: make(map[string]*template.Template),
+		svc: svc,
 		srv: &http.Server{
 			Addr:              addr,
 			ReadHeaderTimeout: 10 * time.Second,
@@ -44,32 +39,24 @@ func New(svc *Service, addr string) (*Server, error) {
 		},
 	}
 
+	distFS, err := fs.Sub(static, "static/dist")
+	if err != nil {
+		return nil, err
+	}
+
 	staticFS, err := fs.Sub(static, "static")
 	if err != nil {
 		return nil, err
 	}
 
-	fileServer := http.FileServer(http.FS(staticFS))
+	distServer := http.FileServer(http.FS(distFS))
+	staticServer := http.FileServer(http.FS(staticFS))
+
 	mux := http.NewServeMux()
 
-	mux.Handle("/static/", http.StripPrefix("/static/", fileServer))
-	mux.HandleFunc("/scrape", ans.scrape)
-	mux.HandleFunc("/download", func(w http.ResponseWriter, r *http.Request) {
-		r = requestWithID(r)
-		ans.download(w, r)
-	})
-	mux.HandleFunc("/delete", func(w http.ResponseWriter, r *http.Request) {
-		r = requestWithID(r)
-		ans.delete(w, r)
-	})
-	mux.HandleFunc("/jobs", ans.getJobs)
-	mux.HandleFunc("/view", func(w http.ResponseWriter, r *http.Request) {
-		r = requestWithID(r)
-		ans.viewJob(w, r)
-	})
-	mux.HandleFunc("/", ans.index)
-
+	mux.Handle("/static/", http.StripPrefix("/static/", staticServer))
 	mux.HandleFunc("/api/docs", ans.redocHandler)
+
 	mux.HandleFunc("/api/v1/jobs", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodPost:
@@ -117,25 +104,67 @@ func New(svc *Service, addr string) (*Server, error) {
 		ans.download(w, r)
 	})
 
-	handler := securityHeaders(mux)
-	ans.srv.Handler = handler
+	mux.HandleFunc("/api/v1/jobs/{id}/places", func(w http.ResponseWriter, r *http.Request) {
+		r = requestWithID(r)
 
-	tmplsKeys := []string{
-		"static/templates/index.html",
-		"static/templates/job_rows.html",
-		"static/templates/job_row.html",
-		"static/templates/job_view.html",
-		"static/templates/redoc.html",
-	}
-
-	for _, key := range tmplsKeys {
-		tmp, err := template.ParseFS(static, key)
-		if err != nil {
-			return nil, err
+		if r.Method != http.MethodGet {
+			ans := apiError{
+				Code:    http.StatusMethodNotAllowed,
+				Message: "Method not allowed",
+			}
+			renderJSON(w, http.StatusMethodNotAllowed, ans)
+			return
 		}
 
-		ans.tmpl[key] = tmp
-	}
+		ans.apiGetJobPlaces(w, r)
+	})
+
+	mux.HandleFunc("/api/v1/auth/cookies/{platform}", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			renderJSON(w, http.StatusMethodNotAllowed, apiError{
+				Code:    http.StatusMethodNotAllowed,
+				Message: "Method not allowed",
+			})
+			return
+		}
+
+		ans.apiSetAuthCookies(w, r)
+	})
+
+	// SPA fallback handler
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		path := strings.TrimPrefix(r.URL.Path, "/")
+		if path != "" {
+			if f, err := distFS.Open(path); err == nil {
+				_ = f.Close()
+				distServer.ServeHTTP(w, r)
+				return
+			}
+		}
+
+		indexFile, err := distFS.Open("index.html")
+		if err != nil {
+			http.Error(w, "frontend not found", http.StatusNotFound)
+			return
+		}
+		defer indexFile.Close()
+
+		stat, err := indexFile.Stat()
+		if err != nil {
+			http.Error(w, "frontend not found", http.StatusNotFound)
+			return
+		}
+
+		if rs, ok := indexFile.(io.ReadSeeker); ok {
+			http.ServeContent(w, r, "index.html", stat.ModTime(), rs)
+			return
+		}
+
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = io.Copy(w, indexFile)
+	})
+
+	ans.srv.Handler = securityHeaders(mux)
 
 	return &ans, nil
 }
@@ -143,13 +172,11 @@ func New(svc *Service, addr string) (*Server, error) {
 func (s *Server) Start(ctx context.Context) error {
 	go func() {
 		<-ctx.Done()
-
 		err := s.srv.Shutdown(context.Background())
 		if err != nil {
 			log.Println(err)
 			return
 		}
-
 		log.Println("server stopped")
 	}()
 
@@ -161,22 +188,6 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 
 	return nil
-}
-
-type formData struct {
-	Name        string
-	MaxTime     string
-	Keywords    []string
-	Language    string
-	Zoom        int
-	FastMode    bool
-	Radius      int
-	Lat         string
-	Lon         string
-	Depth       int
-	Email       bool
-	Proxies     []string
-	ExtraReviews bool
 }
 
 type ctxKey string
@@ -202,221 +213,7 @@ func getIDFromRequest(r *http.Request) (uuid.UUID, bool) {
 	return id, ok
 }
 
-func (s *Server) index(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	tmpl, ok := s.tmpl["static/templates/index.html"]
-	if !ok {
-		http.Error(w, "missing tpl", http.StatusInternalServerError)
-		return
-	}
-
-	data := formData{
-		Name:     "",
-		MaxTime:  "10m",
-		Keywords: []string{},
-		Language: "en",
-		Zoom:     15,
-		FastMode: false,
-		Radius:   10000,
-		Lat:      "",
-		Lon:      "",
-		Depth:    10,
-		Email:    false,
-	}
-
-	_ = tmpl.Execute(w, data)
-}
-
-func (s *Server) scrape(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	err := r.ParseForm()
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	newJob := Job{
-		ID:     uuid.New().String(),
-		Name:   r.Form.Get("name"),
-		Date:   time.Now().UTC(),
-		Status: StatusPending,
-		Data:   JobData{},
-	}
-
-	maxTimeStr := r.Form.Get("maxtime")
-
-	maxTime, err := time.ParseDuration(maxTimeStr)
-	if err != nil {
-		http.Error(w, "invalid max time", http.StatusUnprocessableEntity)
-		return
-	}
-
-	if maxTime < time.Minute*3 {
-		http.Error(w, "max time must be more than 3m", http.StatusUnprocessableEntity)
-		return
-	}
-
-	newJob.Data.MaxTime = maxTime
-
-	keywordsStr, ok := r.Form["keywords"]
-	if !ok {
-		http.Error(w, "missing keywords", http.StatusUnprocessableEntity)
-		return
-	}
-
-	keywords := splitAndTrim(keywordsStr[0])
-	if len(keywords) == 0 {
-		http.Error(w, "missing keywords", http.StatusUnprocessableEntity)
-		return
-	}
-	newJob.Data.Keywords = keywords
-
-	newJob.Data.Lang = r.Form.Get("lang")
-
-	newJob.Data.Zoom, err = parseInt(r.Form.Get("zoom"))
-	if err != nil {
-		http.Error(w, "invalid zoom", http.StatusUnprocessableEntity)
-		return
-	}
-
-	if r.Form.Get("fastmode") == "on" {
-		newJob.Data.FastMode = true
-	}
-
-	newJob.Data.Radius, err = parseInt(r.Form.Get("radius"))
-	if err != nil {
-		http.Error(w, "invalid radius", http.StatusUnprocessableEntity)
-		return
-	}
-
-	newJob.Data.Lat = r.Form.Get("latitude")
-	newJob.Data.Lon = r.Form.Get("longitude")
-
-	newJob.Data.Depth, err = parseInt(r.Form.Get("depth"))
-	if err != nil {
-		http.Error(w, "invalid depth", http.StatusUnprocessableEntity)
-		return
-	}
-
-	newJob.Data.Email = r.Form.Get("email") == "on"
-	newJob.Data.ExtraReviews = r.Form.Get("extra_reviews") == "on"
-
-	proxiesStr := r.Form.Get("proxies")
-	newJob.Data.Proxies = splitAndTrim(proxiesStr)
-
-	err = newJob.Validate()
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
-		return
-	}
-
-	err = s.svc.Create(r.Context(), &newJob)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	tmpl, ok := s.tmpl["static/templates/job_row.html"]
-	if !ok {
-		http.Error(w, "missing tpl", http.StatusInternalServerError)
-		return
-	}
-
-	_ = tmpl.Execute(w, newJob)
-}
-
-func splitAndTrim(s string) []string {
-	parts := strings.Split(s, "\n")
-	var result []string
-	for _, p := range parts {
-		p = strings.TrimSpace(p)
-		if p != "" {
-			result = append(result, p)
-		}
-	}
-	return result
-}
-
-func parseInt(s string) (int, error) {
-	return strconv.Atoi(s)
-}
-
-
-func (s *Server) getJobs(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	tmpl, ok := s.tmpl["static/templates/job_rows.html"]
-	if !ok {
-		http.Error(w, "missing tpl", http.StatusInternalServerError)
-		return
-	}
-
-	jobs, err := s.svc.All(context.Background())
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	_ = tmpl.Execute(w, jobs)
-}
-
-func (s *Server) viewJob(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	id, ok := getIDFromRequest(r)
-	if !ok {
-		http.Error(w, "Invalid ID", http.StatusUnprocessableEntity)
-		return
-	}
-
-	places, err := s.svc.GetPlaces(r.Context(), id.String())
-
-	if err != nil {
-		if !errors.Is(err, ErrPlacesNotFound) {
-			log.Printf("view job %s: %v", id, err)
-			http.Error(w, "internal server error", http.StatusInternalServerError)
-			return
-		}
-
-		places = []Place{}
-	}
-
-	tmpl, ok := s.tmpl["static/templates/job_view.html"]
-	if !ok {
-		http.Error(w, "missing tpl", http.StatusInternalServerError)
-		return
-	}
-
-	var buf bytes.Buffer
-	if err := tmpl.Execute(&buf, places); err != nil {
-		log.Printf("view job %s: render: %v", id, err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
-		return
-	}
-
-	_, _ = buf.WriteTo(w)
-}
-
 func (s *Server) download(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
 	ctx := r.Context()
 
 	id, ok := getIDFromRequest(r)
@@ -449,49 +246,46 @@ func (s *Server) download(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *Server) delete(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodDelete {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	deleteID, ok := getIDFromRequest(r)
-	if !ok {
-		http.Error(w, "Invalid ID", http.StatusUnprocessableEntity)
-		return
-	}
-
-	err := s.svc.Delete(r.Context(), deleteID.String())
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	w.WriteHeader(http.StatusOK)
-}
-
 type apiError struct {
 	Code    int    `json:"code"`
 	Message string `json:"message"`
 }
 
 type apiScrapeRequest struct {
-	Name string
-	JobData
+	Name         string        `json:"name"`
+	Type         string        `json:"type,omitempty"`
+	Username     string        `json:"username,omitempty"`
+	Query        string        `json:"query,omitempty"`
+	Keywords     []string      `json:"keywords"`
+	Lang         string        `json:"lang"`
+	Zoom         int           `json:"zoom"`
+	Lat          string        `json:"lat"`
+	Lon          string        `json:"lon"`
+	FastMode     bool          `json:"fast_mode"`
+	Radius       int           `json:"radius"`
+	Depth        int           `json:"depth"`
+	Email        bool          `json:"email"`
+	ExtraReviews bool          `json:"extra_reviews"`
+	MaxTime      time.Duration `json:"max_time"`
+	Proxies      []string      `json:"proxies"`
+	Cookie       string        `json:"cookie,omitempty"`
 }
 
 type apiScrapeResponse struct {
 	ID string `json:"id"`
 }
 
-func (s *Server) redocHandler(w http.ResponseWriter, r *http.Request) {
-	tmpl, ok := s.tmpl["static/templates/redoc.html"]
-	if !ok {
-		http.Error(w, "missing tpl", http.StatusInternalServerError)
+func (s *Server) redocHandler(w http.ResponseWriter, _ *http.Request) {
+	redocFile, err := static.Open("static/redoc.html")
+	if err != nil {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprint(w, `<!DOCTYPE html><html><head><title>API Documentation</title><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"><link href="https://fonts.googleapis.com/css?family=Montserrat:300,400,700|Roboto:300,400,700" rel="stylesheet"></head><body><redoc spec-url="/static/spec/spec.yaml"></redoc><script src="https://cdn.redoc.ly/redoc/latest/bundles/redoc.standalone.js"></script></body></html>`)
 		return
 	}
+	defer redocFile.Close()
 
-	_ = tmpl.Execute(w, nil)
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = io.Copy(w, redocFile)
 }
 
 func (s *Server) apiScrape(w http.ResponseWriter, r *http.Request) {
@@ -508,15 +302,40 @@ func (s *Server) apiScrape(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	jobType := strings.ToLower(strings.TrimSpace(req.Type))
+	if jobType == "" {
+		jobType = "gmaps"
+	}
+
 	newJob := Job{
 		ID:     uuid.New().String(),
 		Name:   req.Name,
 		Date:   time.Now().UTC(),
 		Status: StatusPending,
-		Data:   req.JobData,
+		Type:   jobType,
+		Data: JobData{
+			Type:         jobType,
+			Username:     req.Username,
+			Query:        req.Query,
+			Keywords:     req.Keywords,
+			Lang:         req.Lang,
+			Zoom:         req.Zoom,
+			Lat:          req.Lat,
+			Lon:          req.Lon,
+			FastMode:     req.FastMode,
+			Radius:       req.Radius,
+			Depth:        req.Depth,
+			Email:        req.Email,
+			ExtraReviews: req.ExtraReviews,
+			MaxTime:      req.MaxTime,
+			Proxies:      req.Proxies,
+			Cookie:       req.Cookie,
+		},
 	}
 
-	newJob.Data.MaxTime *= time.Second
+	if jobType == "gmaps" {
+		newJob.Data.MaxTime *= time.Second
+	}
 
 	err = newJob.Validate()
 	if err != nil {
@@ -548,7 +367,19 @@ func (s *Server) apiScrape(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) apiGetJobs(w http.ResponseWriter, r *http.Request) {
-	jobs, err := s.svc.All(r.Context())
+	jobType := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("type")))
+
+	var (
+		jobs []Job
+		err  error
+	)
+
+	if jobType != "" {
+		jobs, err = s.svc.AllWithType(r.Context(), jobType)
+	} else {
+		jobs, err = s.svc.All(r.Context())
+	}
+
 	if err != nil {
 		apiError := apiError{
 			Code:    http.StatusInternalServerError,
@@ -557,6 +388,10 @@ func (s *Server) apiGetJobs(w http.ResponseWriter, r *http.Request) {
 
 		renderJSON(w, http.StatusInternalServerError, apiError)
 		return
+	}
+
+	if jobs == nil {
+		jobs = []Job{}
 	}
 
 	renderJSON(w, http.StatusOK, jobs)
@@ -588,6 +423,28 @@ func (s *Server) apiGetJob(w http.ResponseWriter, r *http.Request) {
 	renderJSON(w, http.StatusOK, job)
 }
 
+func (s *Server) apiGetJobPlaces(w http.ResponseWriter, r *http.Request) {
+	id, ok := getIDFromRequest(r)
+	if !ok {
+		apiError := apiError{
+			Code:    http.StatusUnprocessableEntity,
+			Message: "Invalid ID",
+		}
+		renderJSON(w, http.StatusUnprocessableEntity, apiError)
+		return
+	}
+
+	places, err := s.svc.GetPlaces(r.Context(), id.String())
+	if err != nil {
+		if !errors.Is(err, ErrPlacesNotFound) {
+			log.Printf("api view job %s: %v", id, err)
+		}
+		places = []Place{}
+	}
+
+	renderJSON(w, http.StatusOK, places)
+}
+
 func (s *Server) apiDeleteJob(w http.ResponseWriter, r *http.Request) {
 	id, ok := getIDFromRequest(r)
 	if !ok {
@@ -612,6 +469,70 @@ func (s *Server) apiDeleteJob(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusOK)
+}
+
+type apiSetCookiesRequest struct {
+	Cookies string `json:"cookies"`
+}
+
+func (s *Server) apiSetAuthCookies(w http.ResponseWriter, r *http.Request) {
+	platform := r.PathValue("platform")
+
+	validPlatforms := map[string]bool{
+		"twitter":  true,
+		"tiktok":   true,
+		"threads":  true,
+		"facebook": true,
+	}
+
+	if !validPlatforms[platform] {
+		renderJSON(w, http.StatusBadRequest, apiError{
+			Code:    http.StatusBadRequest,
+			Message: "Invalid platform. Supported: twitter, tiktok, threads, facebook",
+		})
+		return
+	}
+
+	var req apiSetCookiesRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		renderJSON(w, http.StatusBadRequest, apiError{
+			Code:    http.StatusBadRequest,
+			Message: "Invalid request body",
+		})
+		return
+	}
+
+	if strings.TrimSpace(req.Cookies) == "" {
+		renderJSON(w, http.StatusBadRequest, apiError{
+			Code:    http.StatusBadRequest,
+			Message: "Cookies cannot be empty",
+		})
+		return
+	}
+
+	// Save cookies to cookies/{platform}.txt
+	cookieDir := "cookies"
+	if err := os.MkdirAll(cookieDir, 0755); err != nil {
+		renderJSON(w, http.StatusInternalServerError, apiError{
+			Code:    http.StatusInternalServerError,
+			Message: "Failed to create cookies directory",
+		})
+		return
+	}
+
+	cookiePath := filepath.Join(cookieDir, platform+".txt")
+	if err := os.WriteFile(cookiePath, []byte(strings.TrimSpace(req.Cookies)), 0600); err != nil {
+		renderJSON(w, http.StatusInternalServerError, apiError{
+			Code:    http.StatusInternalServerError,
+			Message: "Failed to save cookies",
+		})
+		return
+	}
+
+	renderJSON(w, http.StatusOK, map[string]string{
+		"status":   "ok",
+		"platform": platform,
+	})
 }
 
 func renderJSON(w http.ResponseWriter, code int, data any) {

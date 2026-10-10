@@ -80,7 +80,7 @@ func (h *HTTPServer) gracefulShutdown(ctx context.Context) {
 	}
 }
 
-const defaultAddr = ":8080"
+const defaultAddr = ":58080"
 
 func setupDefaults(s *HTTPServer) {
 	if s.addr == "" {

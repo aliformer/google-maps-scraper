@@ -20,7 +20,7 @@ services:
     image: migrate/migrate
     volumes:
       - ./scripts/migrations:/migrations
-    command: ["-path", "/migrations", "-database",  "postgres://postgres:postgres@db:5432/postgres?sslmode=disable", "up"]
+    command: ["-path", "/migrations", "-database",  "postgres://postgres:postgres@db:5930/postgres?sslmode=disable", "up"]
     healthcheck:
       test: "exit 0"
     depends_on:

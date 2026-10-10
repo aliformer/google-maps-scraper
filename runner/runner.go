@@ -32,6 +32,7 @@ const (
 	RunModeWeb
 	RunModeAwsLambda
 	RunModeAwsLambdaInvoker
+	RunModeAuth
 )
 
 var (
@@ -91,6 +92,9 @@ type Config struct {
 	GridBBox   string  // "minLat,minLon,maxLat,maxLon"
 	GridCellKm float64 // size of each grid cell in km (default: 1.0)
 	Version    bool
+
+	// Auth mode for interactive social media login
+	AuthPlatform string // twitter, tiktok, threads, facebook
 }
 
 //nolint:gocyclo // The cyclomatic complexity of this function is high due to the number of configuration options and validations.
@@ -137,7 +141,7 @@ func ParseConfig() *Config {
 	flag.IntVar(&cfg.AwsLambdaChunkSize, "aws-lambda-chunk-size", 100, "AWS Lambda chunk size")
 	flag.BoolVar(&cfg.FastMode, "fast-mode", false, "fast mode (reduced data collection)")
 	flag.Float64Var(&cfg.Radius, "radius", 10000, "search radius in meters. Default is 10000 meters")
-	flag.StringVar(&cfg.Addr, "addr", ":8080", "address to listen on for web server")
+	flag.StringVar(&cfg.Addr, "addr", ":58080", "address to listen on for web server")
 	flag.BoolVar(&cfg.DisablePageReuse, "disable-page-reuse", false, "disable page reuse in playwright")
 	flag.BoolVar(&cfg.ExtraReviews, "extra-reviews", false, "enable extra reviews collection")
 	flag.StringVar(&cfg.LeadsDBAPIKey, "leadsdb-api-key", "", "LeadsDB API key for exporting results to LeadsDB")
@@ -145,6 +149,7 @@ func ParseConfig() *Config {
 	flag.Float64Var(&cfg.GridCellKm, "grid-cell", 1.0, "grid cell size in km [default: 1.0]. Use with -grid-bbox")
 	flag.IntVar(&cfg.BrowserPoolSize, "browser-pool-size", 0, "number of browser contexts for JS mode; 0 derives from concurrency and pages-per-browser")
 	flag.IntVar(&cfg.MaxPagesPerBrowser, "pages-per-browser", 1, "maximum concurrent pages per browser context in JS mode")
+	flag.StringVar(&cfg.AuthPlatform, "auth", "", "interactive login for social media platform (twitter, tiktok, threads, facebook)")
 	flag.BoolVar(&cfg.Version, "version", false, "returns the version of the tool")
 
 	flag.Parse()
@@ -223,6 +228,8 @@ func ParseConfig() *Config {
 	}
 
 	switch {
+	case cfg.AuthPlatform != "":
+		cfg.RunMode = RunModeAuth
 	case cfg.AwsLambdaInvoker:
 		cfg.RunMode = RunModeAwsLambdaInvoker
 	case cfg.AwsLamdbaRunner:

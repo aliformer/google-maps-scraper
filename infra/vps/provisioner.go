@@ -128,7 +128,7 @@ func (p *provisioner) CreateDatabase(ctx context.Context) (*infra.DatabaseInfo, 
 		return nil, fmt.Errorf("database setup failed: %s\n%w", output, err)
 	}
 
-	connURL := fmt.Sprintf("postgres://gms:%s@%s:5432/gms?sslmode=require", password, p.host)
+	connURL := fmt.Sprintf("postgres://gms:%s@%s:5930/gms?sslmode=require", password, p.host)
 
 	return &infra.DatabaseInfo{
 		ConnectionURL: connURL,

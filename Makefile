@@ -79,15 +79,12 @@ provision: ## run the provisioning wizard via Docker (state persisted to ~/.gmap
 	  gmapssaas:$(VERSION) provision
 
 saas-dev: ## start SaaS development environment (postgres + migrations + admin user + hot reload)
-	@docker compose -f docker-compose.saas.yaml up -d postgres
-	@echo "Waiting for postgres..."
-	@until docker compose -f docker-compose.saas.yaml exec -T postgres pg_isready -U postgres > /dev/null 2>&1; do sleep 1; done
 	@echo "Running migrations..."
-	@sql-migrate up -config=migrations/dbconfig.yml
+	@go run github.com/rubenv/sql-migrate/sql-migrate@latest up -config=migrations/dbconfig.yml
 	@echo "Creating admin user..."
 	@go run ./cmd/gmapssaas admin create-user -u admin -p '1234#abcd'
-	@echo "Starting server with hot reload on :8080..."
-	@air
+	@echo "Starting server with hot reload on :58080..."
+	@go run github.com/air-verse/air@latest
 
 saas-dev-stop: ## stop SaaS development environment
 	@docker compose -f docker-compose.saas.yaml down
@@ -105,17 +102,17 @@ saas-provision: ## run infrastructure provisioning wizard
 	@go run ./cmd/gmapssaas provision
 
 saas-migrate-up: ## run all pending SaaS database migrations
-	@sql-migrate up -config=migrations/dbconfig.yml
+	@go run github.com/rubenv/sql-migrate/sql-migrate@latest up -config=migrations/dbconfig.yml
 
 saas-migrate-down: ## rollback the last SaaS migration
-	@sql-migrate down -config=migrations/dbconfig.yml -limit=1
+	@go run github.com/rubenv/sql-migrate/sql-migrate@latest down -config=migrations/dbconfig.yml -limit=1
 
 saas-migrate-status: ## show SaaS migration status
-	@sql-migrate status -config=migrations/dbconfig.yml
+	@go run github.com/rubenv/sql-migrate/sql-migrate@latest status -config=migrations/dbconfig.yml
 
 saas-migrate-new: ## create a new SaaS migration (usage: make saas-migrate-new name=xxx)
 	@if [ -z "$(name)" ]; then echo "Error: name required. Usage: make saas-migrate-new name=xxx"; exit 1; fi
-	@sql-migrate new -config=migrations/dbconfig.yml $(name)
+	@go run github.com/rubenv/sql-migrate/sql-migrate@latest new -config=migrations/dbconfig.yml $(name)
 
 saas-gen: ## regenerate swagger docs for the SaaS API
 	@swag init -g api/doc.go -o api/docs
@@ -123,7 +120,7 @@ saas-gen: ## regenerate swagger docs for the SaaS API
 gen: saas-gen ## generate swagger docs
 
 saas-psql: ## connect to SaaS development database
-	PGPASSWORD=postgres psql -h localhost -p 5432 -U postgres gmapssaas
+	PGPASSWORD=difyai123456 psql -h localhost -p 5432 -U postgres gmapssaas
 
 clean: ## clean build artifacts
 	@rm -rf bin/ tmp/

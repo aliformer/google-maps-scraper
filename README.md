@@ -295,12 +295,12 @@ mkdir -p gmapsdata
 
 docker run \
   -v "$PWD/gmapsdata:/gmapsdata" \
-  -p 8080:8080 \
+  -p 58080:58080 \
   gosom/google-maps-scraper \
   -data-folder /gmapsdata
 ```
 
-Then open http://localhost:8080 in your browser.
+Then open http://localhost:58080 in your browser.
 
 Or download the [binary release](https://github.com/gosom/google-maps-scraper/releases) for your platform.
 
@@ -320,7 +320,7 @@ When running the web server, a full REST API is available:
 | `/api/v1/jobs/{id}` | DELETE | Delete a job |
 | `/api/v1/jobs/{id}/download` | GET | Download results as CSV |
 
-Full OpenAPI 3.0.3 documentation available at http://localhost:8080/api/docs
+Full OpenAPI 3.0.3 documentation available at http://localhost:58080/api/docs
 
 ### SaaS Edition
 
@@ -502,7 +502,7 @@ Location Settings:
 
 Web Server:
   -web               Run web server mode
-  -addr string       Server address (default: ":8080")
+  -addr string       Server address (default: ":58080")
   -data-folder       Data folder for web runner (default: "webdata")
 
 Database:
@@ -712,7 +712,7 @@ docker-compose -f docker-compose.dev.yaml up -d
 **2. Seed the jobs:**
 ```bash
 ./google-maps-scraper \
-  -dsn "postgres://postgres:postgres@localhost:5432/postgres" \
+  -dsn "postgres://postgres:postgres@localhost:5930/postgres" \
   -produce \
   -input example-queries.txt \
   -lang en
@@ -723,7 +723,7 @@ docker-compose -f docker-compose.dev.yaml up -d
 ./google-maps-scraper \
   -c 2 \
   -depth 1 \
-  -dsn "postgres://postgres:postgres@localhost:5432/postgres"
+  -dsn "postgres://postgres:postgres@localhost:5930/postgres"
 ```
 
 ### Kubernetes Deployment
@@ -746,7 +746,7 @@ spec:
       containers:
       - name: google-maps-scraper
         image: gosom/google-maps-scraper:latest
-        args: ["-c", "1", "-depth", "10", "-dsn", "postgres://user:pass@host:5432/db"]
+        args: ["-c", "1", "-depth", "10", "-dsn", "postgres://user:pass@host:5930/db"]
         resources:
           requests:
             memory: "512Mi"

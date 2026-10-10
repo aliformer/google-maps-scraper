@@ -40,7 +40,7 @@ var Command = &cli.Command{
 		&cli.StringFlag{
 			Name:    "database-url",
 			Usage:   "PostgreSQL connection string",
-			Value:   "postgres://postgres:postgres@localhost:5432/gmaps_pro?sslmode=disable",
+			Value:   "postgres://postgres:difyai123456@localhost:5432/gmapssaas?sslmode=disable",
 			Sources: cli.EnvVars(saas.EnvDatabaseURL),
 		},
 		&cli.IntFlag{
@@ -229,7 +229,7 @@ func runHealthServer(ctx context.Context, manager *scraper.ScraperManager) {
 	})
 
 	server := &http.Server{
-		Addr:              ":8080",
+		Addr:              ":58080",
 		Handler:           mux,
 		ReadHeaderTimeout: 30 * time.Second,
 	}
@@ -244,7 +244,7 @@ func runHealthServer(ctx context.Context, manager *scraper.ScraperManager) {
 		_ = server.Shutdown(shutdownCtx)
 	}()
 
-	log.Info("starting health server on :8080")
+	log.Info("starting health server on :58080")
 
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Error("health server error", "error", err)

@@ -109,7 +109,7 @@ services:
     image: postgres:17
     restart: unless-stopped
     ports:
-      - "5432:5432"
+      - "5930:5432"
     volumes:
       - ./data:/var/lib/postgresql/data
       - ./server.crt:/var/lib/postgresql/server.crt:ro

@@ -28,6 +28,10 @@ func (s *Service) All(ctx context.Context) ([]Job, error) {
 	return s.repo.Select(ctx, SelectParams{})
 }
 
+func (s *Service) AllWithType(ctx context.Context, jobType string) ([]Job, error) {
+	return s.repo.Select(ctx, SelectParams{Type: jobType})
+}
+
 func (s *Service) Get(ctx context.Context, id string) (Job, error) {
 	return s.repo.Get(ctx, id)
 }

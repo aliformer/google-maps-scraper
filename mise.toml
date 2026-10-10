@@ -1,0 +1,45 @@
+[tools]
+go = "1.26"
+node = "20"
+
+[tasks.be]
+description = "Run backend server"
+run = "go run . -web -addr :58080"
+sources = ["**/*.go"]
+
+[tasks.fe]
+description = "Run frontend dev server"
+dir = "web/frontend"
+run = "bun run dev"
+sources = ["web/frontend/**/*"]
+
+[tasks.fe-install]
+description = "Install frontend dependencies"
+dir = "web/frontend"
+run = "bun install"
+
+[tasks.build]
+description = "Build backend binary"
+run = "go build -o bin/scraper ."
+sources = ["**/*.go"]
+outputs = ["bin/scraper"]
+
+[tasks.dev]
+description = "Run frontend and backend together"
+depends = ["be", "fe"]
+
+[tasks.test]
+description = "Run all tests"
+run = "go test -race ./..."
+
+[tasks.lint]
+description = "Run linter"
+run = "golangci-lint run"
+
+[tasks.auth]
+description = "Interactive login for social platform (usage: mise run auth -- twitter)"
+run = "go run . -auth {{arg(i=0, name='platform')}}"
+
+[tasks.screenshot]
+description = "Screenshot a URL (usage: mise run screenshot -- 'https://x.com')"
+run = "npx playwright screenshot {{arg(i=0, name='url')}} screenshot.png --wait-for-timeout=5000"

@@ -3,6 +3,7 @@ export interface Job {
   name: string
   date: string
   status: "pending" | "working" | "ok" | "failed"
+  type?: "gmaps" | "twitter" | "threads" | "facebook" | "tiktok"
   data: JobData
 }
 
@@ -19,6 +20,9 @@ export interface JobData {
   extra_reviews: boolean
   max_time: number
   proxies: string[]
+  cookie?: string
+  username?: string
+  query?: string
 }
 
 export interface CreateJobRequest {
@@ -35,6 +39,10 @@ export interface CreateJobRequest {
   extra_reviews: boolean
   max_time: number
   proxies: string[]
+  cookie?: string
+  type?: "gmaps" | "twitter" | "threads" | "facebook" | "tiktok"
+  username?: string
+  query?: string
 }
 
 export interface Place {
